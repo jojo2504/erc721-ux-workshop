@@ -2,3 +2,4 @@
 .env
 /dist
 /wc/node_modules
+/.tools

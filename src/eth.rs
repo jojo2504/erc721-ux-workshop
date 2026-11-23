@@ -110,10 +110,28 @@ struct SignatureEntry {
     signature: String,
 }
 
+/// A browser wallet announced through EIP-6963 (`detail.info`).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct WalletInfo {
+    pub uuid: String,
+    pub name: String,
+    pub icon: String, // data URI
+    pub rdns: String, // stable id, e.g. "io.rabby"
+}
+
+/// localStorage key holding the rdns of the wallet picked last, to reconnect it after a reload.
+const WALLET_KEY: &str = "erc721ux.wallet";
+/// Stored instead of an rdns when the user connected plain `window.ethereum`.
+const DEFAULT_WALLET: &str = "window.ethereum";
+
 thread_local! {
-    /// Wallet used for requests: WalletConnect once connected, else window.ethereum.
+    /// Wallet used for requests: the picked one (EIP-6963 or WalletConnect), else window.ethereum.
     static PROVIDER: RefCell<Option<JsValue>> = const { RefCell::new(None) };
     static LISTENERS: RefCell<Option<Listeners>> = const { RefCell::new(None) };
+    /// Every wallet that answered `eip6963:requestProvider`, with its EIP-1193 provider.
+    static WALLETS: RefCell<Vec<(WalletInfo, JsValue)>> = const { RefCell::new(Vec::new()) };
+    /// Providers we already subscribed to (avoid double event handlers).
+    static ATTACHED: RefCell<Vec<JsValue>> = const { RefCell::new(Vec::new()) };
     static METADATA_CACHE: RefCell<HashMap<u64, TokenMetadata>> = RefCell::new(HashMap::new());
     static SIGNATURES: RefCell<Option<Rc<HashMap<u64, String>>>> = const { RefCell::new(None) };
 }
@@ -218,8 +236,9 @@ fn provider() -> Result<JsValue, String> {
         .ok_or_else(|| "No wallet found. Install MetaMask or use WalletConnect.".into())
 }
 
+/// Events only count for the wallet the user picked (none after Disconnect).
 fn is_active(source: &JsValue) -> bool {
-    provider().is_ok_and(|p| Object::is(&p, source))
+    PROVIDER.with_borrow(|p| p.as_ref().is_some_and(|p| Object::is(p, source)))
 }
 
 /// Call `method` on a JS object and await the result if it is a Promise.
@@ -261,6 +280,10 @@ fn first_account(accounts: &JsValue) -> Option<String> {
 /// Forward wallet events to the stored listeners, only while `provider` is the active wallet.
 fn attach_listeners(provider: &JsValue) {
     let Some(listeners) = LISTENERS.with_borrow(|l| l.clone()) else { return };
+    if ATTACHED.with_borrow(|a| a.iter().any(|p| Object::is(p, provider))) {
+        return;
+    }
+    ATTACHED.with_borrow_mut(|a| a.push(provider.clone()));
 
     let (source, accounts_cb) = (provider.clone(), listeners.accounts);
     let on_accounts = Closure::<dyn Fn(JsValue)>::new(move |accounts: JsValue| {
@@ -295,20 +318,92 @@ pub fn subscribe(on_accounts: impl Fn(Option<String>) + 'static, on_chain: impl 
     }
 }
 
-/// Account already authorized for this site (no popup), e.g. after a page reload.
-pub async fn current_account() -> Result<Option<String>, String> {
-    if provider().is_err() {
-        return Ok(None);
+/// EIP-6963: ask every installed wallet to announce itself, instead of taking whichever one
+/// won the race for `window.ethereum`. `on_change` gets the full list after each announcement.
+pub fn discover_wallets(on_change: impl Fn(Vec<WalletInfo>) + 'static) {
+    let Some(window) = web_sys::window() else { return };
+    let on_announce = Closure::<dyn Fn(web_sys::CustomEvent)>::new(move |event: web_sys::CustomEvent| {
+        let detail = event.detail();
+        let provider = error_field(&detail, "provider");
+        let Ok(info) = serde_wasm_bindgen::from_value::<WalletInfo>(error_field(&detail, "info")) else {
+            return;
+        };
+        if provider.is_undefined() || provider.is_null() {
+            return;
+        }
+        let list = WALLETS.with_borrow_mut(|wallets| {
+            if !wallets.iter().any(|(known, _)| known.rdns == info.rdns) {
+                wallets.push((info, provider));
+            }
+            wallets.iter().map(|(info, _)| info.clone()).collect::<Vec<_>>()
+        });
+        on_change(list);
+    });
+    let _ = window.add_event_listener_with_callback("eip6963:announceProvider", on_announce.as_ref().unchecked_ref());
+    on_announce.forget(); // wallets may announce at any time
+    if let Ok(event) = web_sys::Event::new("eip6963:requestProvider") {
+        let _ = window.dispatch_event(&event);
     }
+}
+
+fn find_wallet(rdns: &str) -> Option<JsValue> {
+    WALLETS.with_borrow(|w| w.iter().find(|(info, _)| info.rdns == rdns).map(|(_, p)| p.clone()))
+}
+
+fn storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok()?
+}
+
+fn remember_wallet(rdns: Option<&str>) {
+    if let Some(storage) = storage() {
+        let _ = match rdns {
+            Some(rdns) => storage.set_item(WALLET_KEY, rdns),
+            None => storage.remove_item(WALLET_KEY),
+        };
+    }
+}
+
+fn use_provider(provider: JsValue) {
+    attach_listeners(&provider);
+    PROVIDER.set(Some(provider));
+}
+
+/// Account already authorized for this site (no popup), e.g. after a page reload.
+/// Reuses the wallet picked last time if it is still installed.
+pub async fn current_account() -> Result<Option<String>, String> {
+    let Some(rdns) = storage().and_then(|s| s.get_item(WALLET_KEY).ok().flatten()) else {
+        return Ok(None); // never connected, or disconnected
+    };
+    let wallet = if rdns == DEFAULT_WALLET {
+        injected()
+    } else {
+        if find_wallet(&rdns).is_none() {
+            TimeoutFuture::new(300).await; // give slow wallets time to announce
+        }
+        find_wallet(&rdns)
+    };
+    let Some(wallet) = wallet else { return Ok(None) };
+    use_provider(wallet);
     Ok(first_account(&request("eth_accounts", json!([])).await?))
 }
 
-/// Connect the browser wallet. Returns the first address.
-pub async fn connect_injected() -> Result<String, String> {
-    let ethereum = injected().ok_or("No browser wallet found. Install MetaMask or use WalletConnect.")?;
-    PROVIDER.set(Some(ethereum));
+/// Connect a browser wallet: the one announced with `rdns` (EIP-6963), or `window.ethereum`.
+/// Returns the first address.
+pub async fn connect_injected(rdns: Option<String>) -> Result<String, String> {
+    let ethereum = match &rdns {
+        Some(rdns) => find_wallet(rdns).ok_or("This wallet is not available anymore. Reload the page.")?,
+        None => injected().ok_or("No browser wallet found. Install MetaMask or use WalletConnect.")?,
+    };
+    use_provider(ethereum);
     let accounts = request("eth_requestAccounts", json!([])).await?;
+    remember_wallet(Some(rdns.as_deref().unwrap_or(DEFAULT_WALLET)));
     first_account(&accounts).ok_or_else(|| "The wallet returned no account".into())
+}
+
+/// Forget the picked wallet (the site stays authorized in the wallet itself).
+pub fn disconnect() {
+    PROVIDER.set(None);
+    remember_wallet(None);
 }
 
 /// Connect a mobile wallet with a QR code (WalletConnect v2). Returns the first address.
@@ -332,8 +427,8 @@ pub async fn connect_walletconnect() -> Result<String, String> {
 
     let provider = js_call(&wc, "init", &[options]).await.map_err(error_message)?;
     let accounts = js_call(&provider, "enable", &[]).await.map_err(error_message)?;
-    PROVIDER.set(Some(provider.clone()));
-    attach_listeners(&provider);
+    use_provider(provider);
+    remember_wallet(None); // WalletConnect sessions are not restored on reload
     first_account(&accounts).ok_or_else(|| "The wallet returned no account".into())
 }
 
@@ -343,22 +438,40 @@ pub async fn chain_id() -> Result<u64, String> {
     parse_hex_u64(&id.as_string().ok_or("eth_chainId returned no string")?)
 }
 
-/// Switch the wallet to Sepolia; add the chain first if the wallet doesn't know it (error 4902).
+/// True when a `wallet_switchEthereumChain` error means "this wallet doesn't know the chain".
+/// The standard code is 4902, but wallets differ: MetaMask mobile nests it in
+/// `data.originalError.code`, Rabby sends another code with an "Unrecognized chain ID" message.
+fn is_unknown_chain(e: &JsValue) -> bool {
+    let code = |v: &JsValue| error_field(v, "code").as_f64() == Some(4902.0);
+    let original = error_field(&error_field(e, "data"), "originalError");
+    let message = error_message(e.clone()).to_lowercase();
+    code(e)
+        || code(&original)
+        || message.contains("unrecognized chain")
+        || message.contains("addethereumchain")
+        || message.contains("not been added")
+}
+
+/// Switch the wallet to Sepolia; add the chain first if the wallet doesn't know it.
 pub async fn switch_to_sepolia() -> Result<(), String> {
-    match request_raw("wallet_switchEthereumChain", json!([{ "chainId": SEPOLIA }])).await {
+    let switch = || request_raw("wallet_switchEthereumChain", json!([{ "chainId": SEPOLIA }]));
+    match switch().await {
         Ok(_) => Ok(()),
-        Err(e) if error_field(&e, "code").as_f64() == Some(4902.0) => request(
-            "wallet_addEthereumChain",
-            json!([{
-                "chainId": SEPOLIA,
-                "chainName": "Sepolia",
-                "nativeCurrency": { "name": "Sepolia Ether", "symbol": "ETH", "decimals": 18 },
-                "rpcUrls": ["https://ethereum-sepolia-rpc.publicnode.com"],
-                "blockExplorerUrls": ["https://sepolia.etherscan.io"],
-            }]),
-        )
-        .await
-        .map(|_| ()),
+        Err(e) if is_unknown_chain(&e) => {
+            request(
+                "wallet_addEthereumChain",
+                json!([{
+                    "chainId": SEPOLIA,
+                    "chainName": "Sepolia",
+                    "nativeCurrency": { "name": "Sepolia Ether", "symbol": "ETH", "decimals": 18 },
+                    "rpcUrls": ["https://ethereum-sepolia-rpc.publicnode.com"],
+                    "blockExplorerUrls": ["https://sepolia.etherscan.io"],
+                }]),
+            )
+            .await?;
+            // Some wallets (MetaMask) switch on add, others (Rabby) only add: switch again.
+            switch().await.map(|_| ()).map_err(error_message)
+        }
         Err(e) => Err(error_message(e)),
     }
 }

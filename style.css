@@ -89,3 +89,15 @@ th { text-align: left; padding-right: 16px; color: var(--muted); font-weight: no
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 16px; }
 .grid figure { margin: 0; }
 .grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; background: var(--border); }
+
+.wallet-picker {
+    flex-basis: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-end;
+}
+.wallet-picker p { margin: 0; }
+.wallet-option { display: inline-flex; align-items: center; gap: 8px; }
+.wallet-option img { width: 20px; height: 20px; border-radius: 4px; }

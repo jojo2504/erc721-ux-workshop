@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+# Repo-local trunk: binary in .tools/bin, downloaded tools (wasm-bindgen, wasm-opt) cached in .tools/cache.
+# Install once with: cargo install trunk --locked --root .tools
+here="$(cd "$(dirname "$0")" && pwd)"
+XDG_CACHE_HOME="$here/.tools/cache" exec "$here/.tools/bin/trunk" "$@"

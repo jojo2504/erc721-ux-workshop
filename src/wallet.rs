@@ -2,7 +2,7 @@
 
 use leptos::prelude::*;
 
-use crate::eth;
+use crate::eth::{self, WalletInfo};
 
 pub const SEPOLIA_ID: u64 = 11_155_111;
 
@@ -10,6 +10,8 @@ pub const SEPOLIA_ID: u64 = 11_155_111;
 pub struct Wallet {
     pub address: RwSignal<Option<String>>,
     pub chain_id: RwSignal<Option<u64>>,
+    /// Browser wallets found through EIP-6963 (Phantom, Rabby, MetaMask…).
+    pub wallets: RwSignal<Vec<WalletInfo>>,
 }
 
 impl Wallet {
@@ -18,12 +20,14 @@ impl Wallet {
         let wallet = Self {
             address: RwSignal::new(None),
             chain_id: RwSignal::new(None),
+            wallets: RwSignal::new(Vec::new()),
         };
         provide_context(wallet);
         eth::subscribe(
             move |address| wallet.address.set(address),
             move |chain| wallet.chain_id.set(Some(chain)),
         );
+        eth::discover_wallets(move |list| wallet.wallets.set(list));
         // Restore a connection the wallet already authorized (page reload, direct link).
         leptos::task::spawn_local(async move {
             if let Ok(Some(address)) = eth::current_account().await {

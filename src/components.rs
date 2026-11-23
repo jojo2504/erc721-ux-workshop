@@ -10,7 +10,7 @@ use leptos_router::{
 
 use crate::{
     eth,
-    wallet::{Wallet, short_address},
+    wallet::{SEPOLIA_ID, Wallet, short_address},
 };
 
 #[component]
@@ -43,34 +43,51 @@ fn ChainGuard() -> impl IntoView {
     });
 }
 
+/// How the user wants to connect.
+#[derive(Clone)]
+enum Connector {
+    /// A browser wallet: its EIP-6963 rdns, or None for plain `window.ethereum`.
+    Browser(Option<String>),
+    WalletConnect,
+}
+
 #[component]
 fn WalletBar() -> impl IntoView {
     let wallet = Wallet::get();
     let error = RwSignal::new(None::<String>);
+    let picking = RwSignal::new(false);
 
-    let connect = move |walletconnect: bool| {
+    let connect = move |connector: Connector| {
+        picking.set(false);
         spawn_local(async move {
             let result = async {
-                let address = if walletconnect {
-                    eth::connect_walletconnect().await?
-                } else {
-                    eth::connect_injected().await?
+                let address = match connector {
+                    Connector::Browser(rdns) => eth::connect_injected(rdns).await?,
+                    Connector::WalletConnect => eth::connect_walletconnect().await?,
                 };
+                // Ask the wallet to move to Sepolia right away (adds the chain if it doesn't know it).
+                let mut switch_error = None;
+                if eth::chain_id().await? != SEPOLIA_ID
+                    && let Err(e) = eth::switch_to_sepolia().await
+                {
+                    switch_error = Some(friendly_error(&e));
+                }
                 let chain = eth::chain_id().await?;
-                Ok::<_, String>((address, chain))
+                Ok::<_, String>((address, chain, switch_error))
             }
             .await;
             match result {
-                Ok((address, chain)) => {
+                Ok((address, chain, switch_error)) => {
                     wallet.address.set(Some(address));
                     wallet.chain_id.set(Some(chain));
-                    error.set(None);
+                    error.set(switch_error);
                 }
                 Err(e) => error.set(Some(friendly_error(&e))),
             }
         })
     };
     let disconnect = move |_| {
+        eth::disconnect();
         wallet.address.set(None);
         wallet.chain_id.set(None);
     };
@@ -79,8 +96,8 @@ fn WalletBar() -> impl IntoView {
         <div class="wallet-bar">
             {move || match wallet.address.get() {
                 None => view! {
-                    <button on:click=move |_| connect(false)>"Connect browser wallet"</button>
-                    <button on:click=move |_| connect(true)>"WalletConnect (QR)"</button>
+                    <button on:click=move |_| picking.update(|p| *p = !*p)>"Connect browser wallet"</button>
+                    <button on:click=move |_| connect(Connector::WalletConnect)>"WalletConnect (QR)"</button>
                 }
                 .into_any(),
                 Some(address) => view! {
@@ -97,6 +114,40 @@ fn WalletBar() -> impl IntoView {
             }}
             {move || error.get().map(|e| view! { <span class="error">{e}</span> })}
         </div>
+        <Show when=move || picking.get() && wallet.address.get().is_none()>
+            <div class="wallet-picker">
+                <p class="muted">"Choose a wallet"</p>
+                {move || {
+                    let wallets = wallet.wallets.get();
+                    if wallets.is_empty() {
+                        view! {
+                            <button class="secondary" on:click=move |_| connect(Connector::Browser(None))>
+                                "Default browser wallet"
+                            </button>
+                        }
+                        .into_any()
+                    } else {
+                        wallets
+                            .into_iter()
+                            .map(|info| {
+                                let rdns = info.rdns.clone();
+                                view! {
+                                    <button
+                                        class="secondary wallet-option"
+                                        title=info.rdns
+                                        on:click=move |_| connect(Connector::Browser(Some(rdns.clone())))
+                                    >
+                                        <img src=info.icon alt=""/>
+                                        {info.name}
+                                    </button>
+                                }
+                            })
+                            .collect_view()
+                            .into_any()
+                    }
+                }}
+            </div>
+        </Show>
     }
 }
 
