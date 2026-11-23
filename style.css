@@ -1,0 +1,91 @@
+:root {
+    --bg: #fafafa;
+    --fg: #1a1a1a;
+    --muted: #6b6b6b;
+    --border: #dddddd;
+    --accent: #3b5bdb;
+    --ok: #2b8a3e;
+    --error: #c92a2a;
+    color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #141414;
+        --fg: #eaeaea;
+        --muted: #9a9a9a;
+        --border: #333333;
+        --accent: #748ffc;
+        --ok: #69db7c;
+        --error: #ff8787;
+    }
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.5 system-ui, sans-serif;
+}
+
+header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+nav { display: flex; flex-wrap: wrap; gap: 16px; }
+nav a[aria-current="page"] { font-weight: 600; text-decoration: underline; }
+
+main { max-width: 900px; margin: 0 auto; padding: 16px; }
+section { margin: 24px 0; }
+
+a { color: var(--accent); }
+
+button {
+    padding: 6px 14px;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+    font: inherit;
+}
+button.secondary { background: transparent; color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: wait; }
+
+input, select {
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+}
+
+.wallet-bar, .tx { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tx { margin: 8px 0; }
+
+.muted { color: var(--muted); }
+.ok { color: var(--ok); }
+.error { color: var(--error); }
+.error-state { padding: 24px; border: 1px solid var(--error); border-radius: 8px; }
+
+code { overflow-wrap: anywhere; }
+.address { font-family: ui-monospace, monospace; }
+
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; }
+dt { color: var(--muted); }
+dd { margin: 0; }
+
+.token { display: flex; flex-wrap: wrap; gap: 24px; }
+.token img { width: 100%; max-width: 360px; border-radius: 8px; }
+th { text-align: left; padding-right: 16px; color: var(--muted); font-weight: normal; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 16px; }
+.grid figure { margin: 0; }
+.grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; background: var(--border); }

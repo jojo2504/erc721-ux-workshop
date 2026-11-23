@@ -1,0 +1,13 @@
+{
+  "name": "wc-bundle",
+  "private": true,
+  "scripts": {
+    "build": "esbuild entry.js --bundle --format=esm --platform=browser --minify --define:global=globalThis --outfile=../public/wc.js"
+  },
+  "dependencies": {
+    "@walletconnect/ethereum-provider": "^2.26.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

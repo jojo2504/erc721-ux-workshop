@@ -1,0 +1,4 @@
+/target
+.env
+/dist
+/wc/node_modules

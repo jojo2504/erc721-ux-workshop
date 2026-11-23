@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>ERC721 UX 101</title>
+
+        <!-- Trunk: compile the crate to WASM and inject the loader -->
+        <link data-trunk rel="rust" data-wasm-opt="z" />
+        <link data-trunk rel="css" href="style.css" />
+
+        <!-- Trunk: copy static assets (WalletConnect bundle lives in public/wc.js) -->
+        <link data-trunk rel="copy-dir" href="public" />
+
+        <!-- Expose WalletConnect's EthereumProvider to Rust via window.WcProvider -->
+        <script type="module">
+            import("/public/wc.js")
+                .then(({ EthereumProvider }) => {
+                    window.WcProvider = EthereumProvider;
+                })
+                .catch(() =>
+                    console.warn(
+                        "public/wc.js not built yet: WalletConnect disabled",
+                    ),
+                );
+        </script>
+    </head>
+    <body></body>
+</html>
